@@ -108,7 +108,7 @@ Create a file `DEPLOYMENT.md` with your deployed service information:
 # Deployment Information
 
 ## Public URL
-https://production-ai-agent.up.railway.app
+https://balanced-perception-production-07ae.up.railway.app
 
 ## Platform
 Railway
@@ -117,13 +117,13 @@ Railway
 
 ### Health Check
 ```bash
-curl https://production-ai-agent.up.railway.app/health
+curl https://balanced-perception-production-07ae.up.railway.app/health
 # Expected: {"status": "ok"}
 ```
 
 ### API Test (with authentication)
 ```bash
-curl -X POST https://production-ai-agent.up.railway.app/ask \
+curl -X POST https://balanced-perception-production-07ae.up.railway.app/ask \
   -H "X-API-Key: my-secret-key-123" \
   -H "Content-Type: application/json" \
   -d '{"user_id": "test", "question": "Hello"}'
@@ -162,20 +162,20 @@ Before submitting, verify your deployment:
 
 ```bash
 # 1. Health check
-curl https://production-ai-agent.up.railway.app/health
+curl https://balanced-perception-production-07ae.up.railway.app/health
 
 # 2. Authentication required
-curl https://production-ai-agent.up.railway.app/ask
+curl https://balanced-perception-production-07ae.up.railway.app/ask
 # Should return 401
 
 # 3. With API key works
-curl -H "X-API-Key: my-secret-key-123" https://production-ai-agent.up.railway.app/ask \
+curl -H "X-API-Key: my-secret-key-123" https://balanced-perception-production-07ae.up.railway.app/ask \
   -X POST -d '{"user_id":"test","question":"Hello"}'
 # Should return 200
 
 # 4. Rate limiting
 for i in {1..15}; do 
-  curl -H "X-API-Key: my-secret-key-123" https://production-ai-agent.up.railway.app/ask \
+  curl -H "X-API-Key: my-secret-key-123" https://balanced-perception-production-07ae.up.railway.app/ask \
     -X POST -d '{"user_id":"test","question":"test"}'; 
 done
 # Should eventually return 429

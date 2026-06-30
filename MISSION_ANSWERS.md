@@ -71,7 +71,7 @@
 ## Part 3: Cloud Deployment
 
 ### Exercise 3.1: Railway deployment
-- **URL deploy thực tế (ví dụ):** `https://production-ai-agent.up.railway.app`
+- **URL deploy thực tế (ví dụ):** `https://balanced-perception-production-07ae.up.railway.app`
 - **Sự khác biệt giữa `railway.toml` và `render.yaml`:**
   - `railway.toml` là file cấu hình cục bộ của Railway nhằm định nghĩa lệnh khởi chạy (`startCommand`), đường dẫn health check (`healthcheckPath`), thời gian timeout và chính sách restart khi gặp lỗi.
   - `render.yaml` tuân theo chuẩn **Infrastructure as Code (IaC)** của Render, cho phép định nghĩa đầy đủ tất cả tài nguyên hệ thống (Services, Databases, Redis), cấu hình môi trường, tự động generate API Key và chỉ định Region (ví dụ: `singapore`) trực tiếp trong file cấu hình.
