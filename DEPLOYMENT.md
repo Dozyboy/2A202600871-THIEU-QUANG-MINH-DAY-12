@@ -17,7 +17,7 @@ curl https://production-ai-agent.up.railway.app/health
 ### API Test (with authentication)
 ```bash
 curl -X POST https://production-ai-agent.up.railway.app/ask \
-  -H "X-API-Key: YOUR_KEY" \
+  -H "X-API-Key: my-secret-key-123" \
   -H "Content-Type: application/json" \
   -d '{"user_id": "test", "question": "Hello"}'
 ```

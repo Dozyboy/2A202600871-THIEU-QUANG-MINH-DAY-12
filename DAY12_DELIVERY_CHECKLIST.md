@@ -124,7 +124,7 @@ curl https://production-ai-agent.up.railway.app/health
 ### API Test (with authentication)
 ```bash
 curl -X POST https://production-ai-agent.up.railway.app/ask \
-  -H "X-API-Key: YOUR_KEY" \
+  -H "X-API-Key: my-secret-key-123" \
   -H "Content-Type: application/json" \
   -d '{"user_id": "test", "question": "Hello"}'
 ```
@@ -169,13 +169,13 @@ curl https://production-ai-agent.up.railway.app/ask
 # Should return 401
 
 # 3. With API key works
-curl -H "X-API-Key: YOUR_KEY" https://production-ai-agent.up.railway.app/ask \
+curl -H "X-API-Key: my-secret-key-123" https://production-ai-agent.up.railway.app/ask \
   -X POST -d '{"user_id":"test","question":"Hello"}'
 # Should return 200
 
 # 4. Rate limiting
 for i in {1..15}; do 
-  curl -H "X-API-Key: YOUR_KEY" https://production-ai-agent.up.railway.app/ask \
+  curl -H "X-API-Key: my-secret-key-123" https://production-ai-agent.up.railway.app/ask \
     -X POST -d '{"user_id":"test","question":"test"}'; 
 done
 # Should eventually return 429
