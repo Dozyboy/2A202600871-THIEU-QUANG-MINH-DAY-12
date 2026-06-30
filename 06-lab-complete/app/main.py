@@ -49,11 +49,60 @@ _request_count = 0
 _error_count = 0
 
 # ─────────────────────────────────────────────────────────
-# Simple In-memory Rate Limiter
+# Redis client initialization (with in-memory fallback)
 # ─────────────────────────────────────────────────────────
-_rate_windows: dict[str, deque] = defaultdict(deque)
+_redis = None
+USE_REDIS = False
+_memory_store = {}
+_rate_windows = defaultdict(deque)
+_daily_cost = 0.0
+_cost_reset_day = time.strftime("%Y-%m-%d")
 
+if settings.redis_url:
+    try:
+        import redis
+        _redis = redis.from_url(settings.redis_url, decode_responses=True)
+        _redis.ping()
+        USE_REDIS = True
+        logger.info("Connected to Redis for stateless storage")
+    except Exception as e:
+        logger.error(f"Failed to connect to Redis at {settings.redis_url}: {e}. Falling back to in-memory.")
+
+# ─────────────────────────────────────────────────────────
+# Rate Limiter
+# ─────────────────────────────────────────────────────────
 def check_rate_limit(key: str):
+    if USE_REDIS:
+        now = time.time()
+        redis_key = f"rate:{key}"
+        try:
+            pipeline = _redis.pipeline()
+            # Remove timestamps older than 60s
+            pipeline.zremrangebyscore(redis_key, 0, now - 60)
+            # Count requests in window
+            pipeline.zcard(redis_key)
+            results = pipeline.execute()
+            current_count = results[1]
+            
+            if current_count >= settings.rate_limit_per_minute:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Rate limit exceeded: {settings.rate_limit_per_minute} req/min",
+                    headers={"Retry-After": "60"},
+                )
+            
+            # Add current request timestamp
+            pipeline = _redis.pipeline()
+            pipeline.zadd(redis_key, {str(now): now})
+            pipeline.expire(redis_key, 60)
+            pipeline.execute()
+        except redis.RedisError as e:
+            logger.error(f"Redis rate limit error: {e}. Falling back to in-memory rate limiting.")
+            _fallback_rate_limit(key)
+    else:
+        _fallback_rate_limit(key)
+
+def _fallback_rate_limit(key: str):
     now = time.time()
     window = _rate_windows[key]
     while window and window[0] < now - 60:
@@ -67,20 +116,53 @@ def check_rate_limit(key: str):
     window.append(now)
 
 # ─────────────────────────────────────────────────────────
-# Simple Cost Guard
+# Cost Guard
 # ─────────────────────────────────────────────────────────
-_daily_cost = 0.0
-_cost_reset_day = time.strftime("%Y-%m-%d")
+def check_and_record_cost(user_id: str, input_tokens: int, output_tokens: int):
+    today = time.strftime("%Y-%m-%d")
+    cost = (input_tokens / 1000) * 0.00015 + (output_tokens / 1000) * 0.0006
+    
+    if USE_REDIS:
+        redis_key = f"budget:{user_id}:{today}"
+        try:
+            current_cost_str = _redis.get(redis_key)
+            current_cost = float(current_cost_str) if current_cost_str else 0.0
+            
+            if current_cost + cost > settings.daily_budget_usd:
+                raise HTTPException(
+                    status_code=402,
+                    detail={
+                        "error": "Daily budget exceeded",
+                        "used_usd": round(current_cost, 6),
+                        "budget_usd": settings.daily_budget_usd,
+                        "resets_at": "midnight UTC",
+                    }
+                )
+                
+            _redis.incrbyfloat(redis_key, cost)
+            _redis.expire(redis_key, 24 * 3600)
+        except redis.RedisError as e:
+            logger.error(f"Redis cost guard error: {e}. Falling back to in-memory cost guard.")
+            _fallback_cost_guard(cost)
+    else:
+        _fallback_cost_guard(cost)
 
-def check_and_record_cost(input_tokens: int, output_tokens: int):
+def _fallback_cost_guard(cost: float):
     global _daily_cost, _cost_reset_day
     today = time.strftime("%Y-%m-%d")
     if today != _cost_reset_day:
         _daily_cost = 0.0
         _cost_reset_day = today
-    if _daily_cost >= settings.daily_budget_usd:
-        raise HTTPException(503, "Daily budget exhausted. Try tomorrow.")
-    cost = (input_tokens / 1000) * 0.00015 + (output_tokens / 1000) * 0.0006
+    if _daily_cost + cost > settings.daily_budget_usd:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "Daily budget exceeded",
+                "used_usd": round(_daily_cost, 6),
+                "budget_usd": settings.daily_budget_usd,
+                "resets_at": "midnight UTC",
+            }
+        )
     _daily_cost += cost
 
 # ─────────────────────────────────────────────────────────
@@ -163,6 +245,7 @@ async def request_middleware(request: Request, call_next):
 # Models
 # ─────────────────────────────────────────────────────────
 class AskRequest(BaseModel):
+    user_id: str = Field("default_user", description="User ID for session identification")
     question: str = Field(..., min_length=1, max_length=2000,
                           description="Your question for the agent")
 
@@ -201,23 +284,74 @@ async def ask_agent(
 
     **Authentication:** Include header `X-API-Key: <your-key>`
     """
-    # Rate limit per API key
-    check_rate_limit(_key[:8])  # use first 8 chars as key bucket
+    # Rate limit per API key or user_id
+    check_rate_limit(body.user_id)
 
-    # Budget check
+    # Budget check (input tokens)
     input_tokens = len(body.question.split()) * 2
-    check_and_record_cost(input_tokens, 0)
+    check_and_record_cost(body.user_id, input_tokens, 0)
 
     logger.info(json.dumps({
         "event": "agent_call",
+        "user_id": body.user_id,
         "q_len": len(body.question),
         "client": str(request.client.host) if request.client else "unknown",
     }))
 
-    answer = llm_ask(body.question)
+    # Get conversation history
+    history = []
+    if USE_REDIS:
+        try:
+            history_data = _redis.get(f"history:{body.user_id}")
+            if history_data:
+                history = json.loads(history_data)
+        except Exception as e:
+            logger.error(f"Failed to load history from Redis: {e}")
+    else:
+        history = _memory_store.get(f"history:{body.user_id}", [])
 
+    # Smart response formatting for "What did I just say?"
+    question_lower = body.question.lower().strip("?. ")
+    if "what did i just say" in question_lower or "tôi vừa nói gì" in question_lower:
+        last_user_msg = None
+        for msg in reversed(history):
+            if msg["role"] == "user":
+                last_user_msg = msg["content"]
+                break
+        if last_user_msg:
+            answer = f"You just said: '{last_user_msg}'"
+        else:
+            answer = "You haven't said anything yet!"
+    else:
+        answer = llm_ask(body.question)
+
+    # Append to history
+    history.append({
+        "role": "user",
+        "content": body.question,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    history.append({
+        "role": "assistant",
+        "content": answer,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+    if len(history) > 20:
+        history = history[-20:]
+
+    # Save conversation history
+    if USE_REDIS:
+        try:
+            _redis.setex(f"history:{body.user_id}", 3600, json.dumps(history))
+        except Exception as e:
+            logger.error(f"Failed to save history to Redis: {e}")
+    else:
+        _memory_store[f"history:{body.user_id}"] = history
+
+    # Budget check (output tokens)
     output_tokens = len(answer.split()) * 2
-    check_and_record_cost(0, output_tokens)
+    check_and_record_cost(body.user_id, 0, output_tokens)
 
     return AskResponse(
         question=body.question,
@@ -248,6 +382,11 @@ def ready():
     """Readiness probe. Load balancer stops routing here if not ready."""
     if not _is_ready:
         raise HTTPException(503, "Not ready")
+    if USE_REDIS:
+        try:
+            _redis.ping()
+        except Exception as e:
+            raise HTTPException(503, f"Redis not reachable: {e}")
     return {"ready": True}
 
 
